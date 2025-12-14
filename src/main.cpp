@@ -49,6 +49,10 @@
 #define DUCK_COUNT 5
 #define DUCK_FLAP_INTERVAL 500  // milliseconds
 
+// Gift configuration
+#define GIFT_WIDTH 13
+#define GIFT_HEIGHT 14
+
 // Obstacle spawning configuration
 #define SPAWN_DELAY_MIN 800   // milliseconds
 #define SPAWN_DELAY_MAX 2500  // milliseconds
@@ -75,18 +79,24 @@ enum GameState {
   STATE_GAME_OVER    // Game ended, showing results
 };
 
+enum ObstacleType {
+  TYPE_DUCK,         // Collision = game over
+  TYPE_FOE,          // Hit from above = 20 points, hit while flapping = -10 points + game over
+  TYPE_GIFT          // Hit = 10 points, disappears
+};
+
 // Position structure for 2D objects
 struct Position {
   int x;
   int y;
   int oldX;
   int oldY;
-  
+
   void updateOld() {
     oldX = x;
     oldY = y;
   }
-  
+
   void move(int dx, int dy = 0) {
     updateOld();
     x += dx;
@@ -102,15 +112,20 @@ struct Tree {
   TFT_eSprite* sprite;
 };
 
-struct Duck {
+struct FlyingObstacle {
   Position pos;
   bool active;           // Whether this obstacle is currently in play
   uint32_t spawnTimer;   // Timer for spawn delay
   bool scored;
-  
+  ObstacleType type;     // Type of obstacle
+
   // Animation state
-  uint32_t lastFlap;     // Last time this duck flapped
-  bool flapFrame;        // Current frame for this duck (0 or 1)
+  uint32_t lastFlap;     // Last time this obstacle flapped (for ducks/foes)
+  bool flapFrame;        // Current frame (0 or 1)
+
+  // Falling state (for killed foes)
+  bool falling;          // Whether foe is falling after being killed
+  float fallVelocity;    // Falling speed
 };
 
 struct SnowFlake {
@@ -124,29 +139,30 @@ struct GameData {
   // Game state
   GameState state;
   uint32_t lastStateChange;
-  
+
   // Player physics
   float sleighY;
   float sleighVelocity;
   float sleighOldY;
-  
+  bool sleighCrashed;  // Whether sleigh has crashed and is falling to ground
+
   // Score & high scores
   int currentScore;
   int sessionHighScore;
   int foreverHighScore;
-  
+
   // Input
   bool buttonPressed;
-  
+
   // Animation & rendering
   uint32_t lastDuckFlap;
   bool duckFrame;
   bool gameOverScreenDrawn;
   bool highScoreUpdated;
-  
+
   // Obstacles
   Tree trees[TREE_COUNT];
-  Duck ducks[DUCK_COUNT];
+  FlyingObstacle flyingObstacles[DUCK_COUNT];
   SnowFlake snowflakes[MAX_SNOWFLAKES];
 };
 
@@ -162,6 +178,9 @@ TFT_eSprite sleighSprite = TFT_eSprite(&tft);
 TFT_eSprite sleighSprite2 = TFT_eSprite(&tft);
 TFT_eSprite duckSprite = TFT_eSprite(&tft);
 TFT_eSprite duckSprite2 = TFT_eSprite(&tft);
+TFT_eSprite foeSprite = TFT_eSprite(&tft);
+TFT_eSprite foeSprite2 = TFT_eSprite(&tft);
+TFT_eSprite giftSprite = TFT_eSprite(&tft);
 TFT_eSprite scoreSprite = TFT_eSprite(&tft);
 
 // Game state
@@ -205,6 +224,34 @@ void createDefaultDuck2() {
   duckSprite2.fillCircle(13, 3, 1, TFT_BLACK);
 }
 
+void createDefaultFoe() {
+  foeSprite.createSprite(DUCK_WIDTH, DUCK_HEIGHT);
+  foeSprite.fillSprite(SKY_BLUE);
+  // Black Peter - dark figure
+  foeSprite.fillCircle(10, 7, 6, TFT_BLACK);
+  foeSprite.fillCircle(8, 5, 2, TFT_RED);
+  foeSprite.fillRect(6, 10, 8, 3, TFT_BLACK);
+}
+
+void createDefaultFoe2() {
+  foeSprite2.createSprite(DUCK_WIDTH, DUCK_HEIGHT);
+  foeSprite2.fillSprite(SKY_BLUE);
+  // Black Peter - dark figure (flapping)
+  foeSprite2.fillCircle(10, 7, 6, TFT_BLACK);
+  foeSprite2.fillCircle(8, 5, 2, TFT_RED);
+  foeSprite2.fillRect(5, 9, 10, 3, TFT_BLACK);
+}
+
+void createDefaultGift() {
+  giftSprite.createSprite(GIFT_WIDTH, GIFT_HEIGHT);
+  giftSprite.fillSprite(SKY_BLUE);
+  // Gift box - colorful present
+  giftSprite.fillRect(5, 4, 10, 8, TFT_RED);
+  giftSprite.fillRect(9, 3, 2, 10, TFT_YELLOW);
+  giftSprite.fillRect(4, 7, 12, 2, TFT_YELLOW);
+  giftSprite.fillCircle(10, 5, 2, TFT_YELLOW);
+}
+
 void createTreeSprite(int treeIndex) {
   if (gameData.trees[treeIndex].sprite != nullptr) {
     gameData.trees[treeIndex].sprite->deleteSprite();
@@ -226,14 +273,14 @@ void createTreeSprite(int treeIndex) {
     // Procedural fallback
     gameData.trees[treeIndex].sprite->createSprite(TREE_WIDTH, TREE_HEIGHT);
     gameData.trees[treeIndex].sprite->fillSprite(SKY_BLUE);
-    
+
     int trunkWidth = 6;
     int trunkHeight = TREE_HEIGHT / 4;
     gameData.trees[treeIndex].sprite->fillRect(
-      TREE_WIDTH/2 - trunkWidth/2, TREE_HEIGHT - trunkHeight, 
+      TREE_WIDTH/2 - trunkWidth/2, TREE_HEIGHT - trunkHeight,
       trunkWidth, trunkHeight, TREE_BROWN
     );
-    
+
     for (int i = 0; i < 3; i++) {
       int layerHeight = (TREE_HEIGHT - trunkHeight) / 3;
       int layerWidth = TREE_WIDTH - i * 4;
@@ -283,9 +330,9 @@ void loadSpritesFromSPIFFS() {
   }
 
   // Load duck frame 1
-  if (SPIFFS.exists("/duck.bin")) {
+  if (SPIFFS.exists("/duck0.bin")) {
     duckSprite.createSprite(DUCK_WIDTH, DUCK_HEIGHT);
-    fs::File file = SPIFFS.open("/duck.bin", "r");
+    fs::File file = SPIFFS.open("/duck0.bin", "r");
     if (file) {
       uint16_t buffer[DUCK_WIDTH * DUCK_HEIGHT];
       file.read((uint8_t*)buffer, DUCK_WIDTH * DUCK_HEIGHT * 2);
@@ -297,9 +344,9 @@ void loadSpritesFromSPIFFS() {
   }
 
   // Load duck frame 2
-  if (SPIFFS.exists("/duck2.bin")) {
+  if (SPIFFS.exists("/duck1.bin")) {
     duckSprite2.createSprite(DUCK_WIDTH, DUCK_HEIGHT);
-    fs::File file = SPIFFS.open("/duck2.bin", "r");
+    fs::File file = SPIFFS.open("/duck1.bin", "r");
     if (file) {
       uint16_t buffer[DUCK_WIDTH * DUCK_HEIGHT];
       file.read((uint8_t*)buffer, DUCK_WIDTH * DUCK_HEIGHT * 2);
@@ -308,6 +355,48 @@ void loadSpritesFromSPIFFS() {
     }
   } else {
     createDefaultDuck2();
+  }
+
+  // Load foe frame 1
+  if (SPIFFS.exists("/foe0.bin")) {
+    foeSprite.createSprite(DUCK_WIDTH, DUCK_HEIGHT);
+    fs::File file = SPIFFS.open("/foe0.bin", "r");
+    if (file) {
+      uint16_t buffer[DUCK_WIDTH * DUCK_HEIGHT];
+      file.read((uint8_t*)buffer, DUCK_WIDTH * DUCK_HEIGHT * 2);
+      foeSprite.pushImage(0, 0, DUCK_WIDTH, DUCK_HEIGHT, buffer);
+      file.close();
+    }
+  } else {
+    createDefaultFoe();
+  }
+
+  // Load foe frame 2
+  if (SPIFFS.exists("/foe1.bin")) {
+    foeSprite2.createSprite(DUCK_WIDTH, DUCK_HEIGHT);
+    fs::File file = SPIFFS.open("/foe1.bin", "r");
+    if (file) {
+      uint16_t buffer[DUCK_WIDTH * DUCK_HEIGHT];
+      file.read((uint8_t*)buffer, DUCK_WIDTH * DUCK_HEIGHT * 2);
+      foeSprite2.pushImage(0, 0, DUCK_WIDTH, DUCK_HEIGHT, buffer);
+      file.close();
+    }
+  } else {
+    createDefaultFoe2();
+  }
+
+  // Load gift
+  if (SPIFFS.exists("/gift0.bin")) {
+    giftSprite.createSprite(GIFT_WIDTH, GIFT_HEIGHT);
+    fs::File file = SPIFFS.open("/gift0.bin", "r");
+    if (file) {
+      uint16_t buffer[GIFT_WIDTH * GIFT_HEIGHT];
+      file.read((uint8_t*)buffer, GIFT_WIDTH * GIFT_HEIGHT * 2);
+      giftSprite.pushImage(0, 0, GIFT_WIDTH, GIFT_HEIGHT, buffer);
+      file.close();
+    }
+  } else {
+    createDefaultGift();
   }
 
   scoreSprite.createSprite(100, 16);
@@ -321,19 +410,20 @@ void loadSpritesFromSPIFFS() {
 void initializeGameData() {
   gameData.state = STATE_MENU;
   gameData.lastStateChange = millis();
-  
+
   gameData.sleighY = PLAYFIELD_HEIGHT / 2;
   gameData.sleighVelocity = 0;
   gameData.sleighOldY = gameData.sleighY;
-  
+  gameData.sleighCrashed = false;
+
   gameData.currentScore = 0;
   gameData.buttonPressed = false;
-  
+
   gameData.lastDuckFlap = 0;
   gameData.duckFrame = false;
   gameData.gameOverScreenDrawn = false;
   gameData.highScoreUpdated = false;
-  
+
   // Initialize trees - spread them out at start
   for (int i = 0; i < TREE_COUNT; i++) {
     gameData.trees[i].pos.x = SCREEN_WIDTH + (i * OBSTACLE_SPAWN_DISTANCE);
@@ -346,18 +436,31 @@ void initializeGameData() {
     gameData.trees[i].sprite = nullptr;
     createTreeSprite(i);
   }
-  
-  // Initialize ducks - spread them out at start
+
+  // Initialize flying obstacles - spread them out at start
   for (int i = 0; i < DUCK_COUNT; i++) {
-    gameData.ducks[i].pos.x = SCREEN_WIDTH + (i * OBSTACLE_SPAWN_DISTANCE) + OBSTACLE_SPAWN_OFFSET;
-    gameData.ducks[i].pos.y = random(5, 40);
-    gameData.ducks[i].pos.oldX = gameData.ducks[i].pos.x;
-    gameData.ducks[i].pos.oldY = gameData.ducks[i].pos.y;
-    gameData.ducks[i].active = (i < 3);  // Only first 3 are active at start
-    gameData.ducks[i].spawnTimer = 0;
-    gameData.ducks[i].scored = false;
-    gameData.ducks[i].lastFlap = 0;
-    gameData.ducks[i].flapFrame = false;
+    gameData.flyingObstacles[i].pos.x = SCREEN_WIDTH + (i * OBSTACLE_SPAWN_DISTANCE) + OBSTACLE_SPAWN_OFFSET;
+    gameData.flyingObstacles[i].pos.y = random(5, 40);
+    gameData.flyingObstacles[i].pos.oldX = gameData.flyingObstacles[i].pos.x;
+    gameData.flyingObstacles[i].pos.oldY = gameData.flyingObstacles[i].pos.y;
+    gameData.flyingObstacles[i].active = (i < 3);  // Only first 3 are active at start
+    gameData.flyingObstacles[i].spawnTimer = 0;
+    gameData.flyingObstacles[i].scored = false;
+    gameData.flyingObstacles[i].lastFlap = 0;
+    gameData.flyingObstacles[i].flapFrame = false;
+    gameData.flyingObstacles[i].falling = false;
+    gameData.flyingObstacles[i].fallVelocity = 0;
+    // Randomly assign type: 80% duck, 16% gift, 4% foe
+    int randType = random(100);
+    if (randType < 80) {
+      gameData.flyingObstacles[i].type = TYPE_DUCK;
+    } else if (randType < 96) {
+      gameData.flyingObstacles[i].type = TYPE_GIFT;
+    } else {
+      gameData.flyingObstacles[i].type = TYPE_FOE;
+      // Foe spawns at middle height for easier combat
+      gameData.flyingObstacles[i].pos.y = PLAYFIELD_HEIGHT / 2 - DUCK_HEIGHT / 2;
+    }
   }
 }
 
@@ -384,7 +487,7 @@ void setup() {
 
   loadSpritesFromSPIFFS();
   initializeGameData();
-  
+
   tft.fillRect(0, PLAYFIELD_HEIGHT, SCREEN_WIDTH, GROUND_HEIGHT, GROUND_GREEN);
 }
 
@@ -395,16 +498,16 @@ void setup() {
 
 void handleInput() {
   bool currentButton = !digitalRead(BUTTON_PIN);  // Active LOW
-  
+
   if (currentButton && !gameData.buttonPressed) {
     gameData.buttonPressed = true;
-    
+
     if (gameData.state == STATE_MENU) {
       gameData.state = STATE_PLAYING;
       gameData.lastStateChange = millis();
       tft.fillScreen(SKY_BLUE);
       tft.fillRect(0, PLAYFIELD_HEIGHT, SCREEN_WIDTH, GROUND_HEIGHT, GROUND_GREEN);
-    } else if (gameData.state == STATE_PLAYING) {
+    } else if (gameData.state == STATE_PLAYING && !gameData.sleighCrashed) {
       gameData.sleighVelocity = JUMP_STRENGTH;
     } else if (gameData.state == STATE_GAME_OVER) {
       // Reset game
@@ -427,56 +530,105 @@ void handleInput() {
 // ============================================================================
 
 void updatePhysics() {
-  gameData.sleighVelocity += GRAVITY;
+  float currentGravity = GRAVITY;
+  
+  // Double gravity when sleigh is crashed
+  if (gameData.sleighCrashed) {
+    currentGravity *= 2.0;
+  }
+  
+  gameData.sleighVelocity += currentGravity;
   gameData.sleighOldY = gameData.sleighY;
   gameData.sleighY += gameData.sleighVelocity;
 }
 
-void updateDuckAnimation() {
+void updateFlyingAnimation() {
   uint32_t currentTime = millis();
-  
-  // Update animation for each duck independently
+
+  // Update animation for each flying obstacle independently
   for (int i = 0; i < DUCK_COUNT; i++) {
-    if (gameData.ducks[i].active) {
-      // Check if it's time to switch frames for this duck
-      if (currentTime - gameData.ducks[i].lastFlap >= DUCK_FLAP_INTERVAL) {
-        gameData.ducks[i].flapFrame = !gameData.ducks[i].flapFrame;
-        gameData.ducks[i].lastFlap = currentTime;
+    if (gameData.flyingObstacles[i].active) {
+      // Only ducks and foes have flapping animation
+      if (gameData.flyingObstacles[i].type == TYPE_DUCK ||
+          gameData.flyingObstacles[i].type == TYPE_FOE) {
+        // Check if it's time to switch frames
+        if (currentTime - gameData.flyingObstacles[i].lastFlap >= DUCK_FLAP_INTERVAL) {
+          gameData.flyingObstacles[i].flapFrame = !gameData.flyingObstacles[i].flapFrame;
+          gameData.flyingObstacles[i].lastFlap = currentTime;
+        }
+      }
+    }
+
+    // Update falling foes
+    if (gameData.flyingObstacles[i].falling) {
+      gameData.flyingObstacles[i].fallVelocity += GRAVITY;
+      gameData.flyingObstacles[i].pos.move(0, (int)gameData.flyingObstacles[i].fallVelocity);
+
+      // Remove if hit ground
+      if (gameData.flyingObstacles[i].pos.y >= PLAYFIELD_HEIGHT) {
+        gameData.flyingObstacles[i].falling = false;
+        gameData.flyingObstacles[i].active = false;
+        gameData.flyingObstacles[i].spawnTimer = currentTime + random(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
       }
     }
   }
 }
 
-// Check if a tree at the given position would overlap with any active trees
+// Check if an obstacle at the given position would overlap with any active obstacles
+bool obstacleOverlapsWithOthers(int newX, int newY, int obstacleIndex) {
+  const int X_MARGIN = 30;   // Minimum horizontal distance between obstacles
+  const int Y_MARGIN = 20;   // Minimum vertical distance between obstacles
+
+  for (int i = 0; i < DUCK_COUNT; i++) {
+    if (i == obstacleIndex || !gameData.flyingObstacles[i].active || gameData.flyingObstacles[i].falling) {
+      continue;  // Skip self, inactive, and falling obstacles
+    }
+
+    // Check both x and y overlap with margin
+    int xDistance = newX - gameData.flyingObstacles[i].pos.x;
+    if (xDistance < 0) xDistance = -xDistance;
+
+    int yDistance = newY - gameData.flyingObstacles[i].pos.y;
+    if (yDistance < 0) yDistance = -yDistance;
+
+    // If both distances are too small, there's an overlap
+    if (xDistance < X_MARGIN && yDistance < Y_MARGIN) {
+      return true;  // Overlap detected
+    }
+  }
+
+  return false;  // No overlap
+}
+
 bool treeOverlapsWithOthers(int newX, int treeIndex) {
   const int OVERLAP_MARGIN = 20;  // Minimum distance between trees
-  
+
   for (int i = 0; i < TREE_COUNT; i++) {
     if (i == treeIndex || !gameData.trees[i].active) {
       continue;  // Skip self and inactive trees
     }
-    
+
     // Check if x positions are too close (simple horizontal overlap detection)
     int distance = newX - gameData.trees[i].pos.x;
     if (distance < 0) distance = -distance;
-    
+
     if (distance < OVERLAP_MARGIN) {
       return true;  // Overlap detected
     }
   }
-  
+
   return false;  // No overlap
 }
 
 void updateObstacles() {
   uint32_t currentTime = millis();
-  
+
   // Update trees
   for (int i = 0; i < TREE_COUNT; i++) {
     if (gameData.trees[i].active) {
       // Move active tree
       gameData.trees[i].pos.move(-OBSTACLE_SPEED);
-      
+
       // Check if tree went off-screen
       if (gameData.trees[i].pos.x < -TREE_WIDTH) {
         gameData.trees[i].active = false;
@@ -492,7 +644,7 @@ void updateObstacles() {
         gameData.trees[i].pos.y = PLAYFIELD_HEIGHT - TREE_HEIGHT;
         gameData.trees[i].pos.oldX = gameData.trees[i].pos.x;
         gameData.trees[i].pos.oldY = gameData.trees[i].pos.y;
-        
+
         // Check if this overlaps with other trees
         if (treeOverlapsWithOthers(gameData.trees[i].pos.x, i)) {
           // Overlap detected, reschedule spawn
@@ -505,30 +657,51 @@ void updateObstacles() {
       }
     }
   }
-  
-  // Update ducks
+
+  // Update flying obstacles
   for (int i = 0; i < DUCK_COUNT; i++) {
-    if (gameData.ducks[i].active) {
-      // Move active duck
-      gameData.ducks[i].pos.move(-OBSTACLE_SPEED);
-      
-      // Check if duck went off-screen
-      if (gameData.ducks[i].pos.x < -DUCK_WIDTH) {
-        gameData.ducks[i].active = false;
-        gameData.ducks[i].scored = false;
+    if (gameData.flyingObstacles[i].active && !gameData.flyingObstacles[i].falling) {
+      // Move active obstacle
+      gameData.flyingObstacles[i].pos.move(-OBSTACLE_SPEED);
+
+      // Check if obstacle went off-screen
+      if (gameData.flyingObstacles[i].pos.x < -DUCK_WIDTH) {
+        gameData.flyingObstacles[i].active = false;
+        gameData.flyingObstacles[i].scored = false;
         // Start spawn delay timer
-        gameData.ducks[i].spawnTimer = currentTime + random(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
+        gameData.flyingObstacles[i].spawnTimer = currentTime + random(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
       }
-    } else {
+    } else if (!gameData.flyingObstacles[i].active && !gameData.flyingObstacles[i].falling) {
       // Check if spawn delay is over
-      if (currentTime >= gameData.ducks[i].spawnTimer) {
-        // Respawn duck
-        gameData.ducks[i].pos.x = SCREEN_WIDTH;
-        gameData.ducks[i].pos.y = random(5, 40);
-        gameData.ducks[i].pos.oldX = gameData.ducks[i].pos.x;
-        gameData.ducks[i].pos.oldY = gameData.ducks[i].pos.y;
-        gameData.ducks[i].active = true;
-        gameData.ducks[i].scored = false;
+      if (currentTime >= gameData.flyingObstacles[i].spawnTimer) {
+        // Respawn obstacle
+        gameData.flyingObstacles[i].pos.x = SCREEN_WIDTH;
+        gameData.flyingObstacles[i].pos.y = random(5, 40);
+        gameData.flyingObstacles[i].pos.oldX = gameData.flyingObstacles[i].pos.x;
+        gameData.flyingObstacles[i].pos.oldY = gameData.flyingObstacles[i].pos.y;
+        gameData.flyingObstacles[i].falling = false;
+        gameData.flyingObstacles[i].fallVelocity = 0;
+        // Randomly assign new type: 80% duck, 16% gift, 4% foe
+        int randType = random(100);
+        if (randType < 80) {
+          gameData.flyingObstacles[i].type = TYPE_DUCK;
+        } else if (randType < 96) {
+          gameData.flyingObstacles[i].type = TYPE_GIFT;
+        } else {
+          gameData.flyingObstacles[i].type = TYPE_FOE;
+          // Foe spawns at middle height for easier combat
+          gameData.flyingObstacles[i].pos.y = PLAYFIELD_HEIGHT / 2 - DUCK_HEIGHT / 2;
+        }
+
+        // Check if this overlaps with other obstacles
+        if (obstacleOverlapsWithOthers(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y, i)) {
+          // Overlap detected, reschedule spawn
+          gameData.flyingObstacles[i].spawnTimer = currentTime + random(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
+        } else {
+          // No overlap, activate the obstacle
+          gameData.flyingObstacles[i].active = true;
+          gameData.flyingObstacles[i].scored = false;
+        }
       }
     }
   }
@@ -536,18 +709,23 @@ void updateObstacles() {
 
 void updateScore() {
   for (int i = 0; i < TREE_COUNT; i++) {
-    if (gameData.trees[i].active && !gameData.trees[i].scored && 
+    if (gameData.trees[i].active && !gameData.trees[i].scored &&
         gameData.trees[i].pos.x + TREE_WIDTH < SLEIGH_START_X) {
       gameData.trees[i].scored = true;
       gameData.currentScore++;
     }
   }
-  
+
   for (int i = 0; i < DUCK_COUNT; i++) {
-    if (gameData.ducks[i].active && !gameData.ducks[i].scored && 
-        gameData.ducks[i].pos.x + DUCK_WIDTH < SLEIGH_START_X) {
-      gameData.ducks[i].scored = true;
-      gameData.currentScore++;
+    if (gameData.flyingObstacles[i].active && !gameData.flyingObstacles[i].scored &&
+        !gameData.flyingObstacles[i].falling &&
+        gameData.flyingObstacles[i].pos.x + DUCK_WIDTH < SLEIGH_START_X) {
+      gameData.flyingObstacles[i].scored = true;
+      // Only ducks and foes give points for passing
+      if (gameData.flyingObstacles[i].type == TYPE_DUCK ||
+          gameData.flyingObstacles[i].type == TYPE_FOE) {
+        gameData.currentScore++;
+      }
     }
   }
 }
@@ -557,7 +735,7 @@ void updateSnow() {
     if (gameData.snowflakes[i].active) {
       if (gameData.snowflakes[i].y < SCREEN_HEIGHT - 1) {
         uint16_t pixelBelow = tft.readPixel(gameData.snowflakes[i].x, gameData.snowflakes[i].y + 1);
-        
+
         if (pixelBelow == SKY_BLUE) {
           tft.drawPixel(gameData.snowflakes[i].x, gameData.snowflakes[i].y, SKY_BLUE);
           gameData.snowflakes[i].y++;
@@ -581,43 +759,85 @@ void updateSnow() {
 
 void checkCollisions() {
   // Ground/ceiling
-  if (gameData.sleighY > PLAYFIELD_HEIGHT - SLEIGH_HITBOX ||
-      gameData.sleighY < 2) {
+  if (gameData.sleighY < 2) {
+    // Hit ceiling - set crashed and let sleigh fall
+    gameData.sleighCrashed = true;
+    gameData.sleighVelocity = 0;  // Start falling from rest
+    return;
+  }
+  
+  // Check if crashed sleigh hit the ground
+  if (gameData.sleighCrashed && gameData.sleighY >= PLAYFIELD_HEIGHT - SLEIGH_HITBOX) {
     gameData.state = STATE_GAME_OVER;
     gameData.lastStateChange = millis();
     return;
   }
-  
+
   // Trees
   for (int i = 0; i < TREE_COUNT; i++) {
     if (gameData.trees[i].active &&
-        gameData.trees[i].pos.x < SLEIGH_START_X + SLEIGH_HITBOX && 
+        gameData.trees[i].pos.x < SLEIGH_START_X + SLEIGH_HITBOX &&
         gameData.trees[i].pos.x + TREE_WIDTH > SLEIGH_START_X + 2) {
       if (gameData.sleighY + SLEIGH_HITBOX > PLAYFIELD_HEIGHT - TREE_HEIGHT) {
-        gameData.state = STATE_GAME_OVER;
-        gameData.lastStateChange = millis();
+        // Collision with tree - set crashed and let sleigh fall
+        gameData.sleighCrashed = true;
+        gameData.sleighVelocity = 0;  // Start falling from rest
         return;
       }
     }
   }
-  
-  // Ducks
+
+  // Flying obstacles (ducks, foes, gifts)
   for (int i = 0; i < DUCK_COUNT; i++) {
-    if (gameData.ducks[i].active &&
-        gameData.ducks[i].pos.x < SLEIGH_START_X + SLEIGH_HITBOX &&
-        gameData.ducks[i].pos.x + DUCK_HITBOX > SLEIGH_START_X + 2) {
-      if (gameData.sleighY < gameData.ducks[i].pos.y + DUCK_HEIGHT &&
-          gameData.sleighY + SLEIGH_HEIGHT > gameData.ducks[i].pos.y) {
-        gameData.state = STATE_GAME_OVER;
-        gameData.lastStateChange = millis();
-        return;
+    if (gameData.flyingObstacles[i].active && !gameData.flyingObstacles[i].falling &&
+        gameData.flyingObstacles[i].pos.x < SLEIGH_START_X + SLEIGH_HITBOX &&
+        gameData.flyingObstacles[i].pos.x + DUCK_HITBOX > SLEIGH_START_X + 2) {
+      if (gameData.sleighY < gameData.flyingObstacles[i].pos.y + DUCK_HEIGHT &&
+          gameData.sleighY + SLEIGH_HEIGHT > gameData.flyingObstacles[i].pos.y) {
+
+        // Collision detected - handle based on obstacle type
+        ObstacleType type = gameData.flyingObstacles[i].type;
+
+        if (type == TYPE_DUCK) {
+          // Duck: set crashed and let sleigh fall
+          gameData.sleighCrashed = true;
+          gameData.sleighVelocity = 0;  // Start falling from rest
+          return;
+        }
+        else if (type == TYPE_FOE) {
+          // Foe: check if we're falling (hitting from above) or flapping
+          if (gameData.sleighVelocity > 0) {
+            // Falling/moving down - kill the foe
+            gameData.flyingObstacles[i].falling = true;
+            gameData.flyingObstacles[i].fallVelocity = 2.0;
+            gameData.currentScore += 20;
+            // Give sleigh a bounce
+            gameData.sleighVelocity = -3.0;
+          } else {
+            // Flapping/moving up - lose points and game over
+            gameData.currentScore -= 10;
+            if (gameData.currentScore < 0) gameData.currentScore = 0;
+            gameData.state = STATE_GAME_OVER;
+            gameData.lastStateChange = millis();
+            return;
+          }
+        }
+        else if (type == TYPE_GIFT) {
+          // Gift: collect for 10 points
+          gameData.currentScore += 10;
+          // Clear the gift sprite position immediately
+          tft.fillRect(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y,
+                       DUCK_WIDTH, DUCK_HEIGHT, SKY_BLUE);
+          gameData.flyingObstacles[i].active = false;
+          gameData.flyingObstacles[i].spawnTimer = millis() + random(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX);
+        }
       }
     }
   }
 }
 
 void updateHighScores() {
-  if (gameData.state == STATE_GAME_OVER && !gameData.highScoreUpdated) {
+  if (!gameData.highScoreUpdated) {
     if (gameData.currentScore > gameData.sessionHighScore) {
       gameData.sessionHighScore = gameData.currentScore;
     }
@@ -643,38 +863,55 @@ void drawMenu() {
 
 void drawGameplay() {
   // Clear sleigh area
-  tft.fillRect(SLEIGH_START_X, (int)gameData.sleighOldY - 2, 
+  tft.fillRect(SLEIGH_START_X, (int)gameData.sleighOldY - 2,
                SLEIGH_WIDTH + 2, SLEIGH_HEIGHT + 4, SKY_BLUE);
-  
+
   // Draw obstacles
   for (int i = 0; i < TREE_COUNT; i++) {
     if (gameData.trees[i].active) {
       // Clear OLD tree position
-      tft.fillRect(gameData.trees[i].pos.oldX, gameData.trees[i].pos.oldY, 
+      tft.fillRect(gameData.trees[i].pos.oldX, gameData.trees[i].pos.oldY,
                    TREE_WIDTH, TREE_HEIGHT, SKY_BLUE);
-      
+
       // Draw tree at NEW position
       if (gameData.trees[i].sprite != nullptr) {
         gameData.trees[i].sprite->pushSprite(gameData.trees[i].pos.x, gameData.trees[i].pos.y);
       }
     }
   }
-  
+
   for (int i = 0; i < DUCK_COUNT; i++) {
-    if (gameData.ducks[i].active) {
-      // Clear OLD duck position
-      tft.fillRect(gameData.ducks[i].pos.oldX, gameData.ducks[i].pos.oldY, 
+    if (gameData.flyingObstacles[i].active || gameData.flyingObstacles[i].falling) {
+      // Clear OLD position
+      tft.fillRect(gameData.flyingObstacles[i].pos.oldX, gameData.flyingObstacles[i].pos.oldY,
                    DUCK_WIDTH, DUCK_HEIGHT, SKY_BLUE);
-      
-      // Draw duck at current position using this duck's individual frame
-      if (gameData.ducks[i].flapFrame) {
-        duckSprite2.pushSprite(gameData.ducks[i].pos.x, gameData.ducks[i].pos.y);
-      } else {
-        duckSprite.pushSprite(gameData.ducks[i].pos.x, gameData.ducks[i].pos.y);
+
+      // Draw obstacle at current position based on type
+      ObstacleType type = gameData.flyingObstacles[i].type;
+
+      if (type == TYPE_DUCK) {
+        // Draw duck with animation
+        if (gameData.flyingObstacles[i].flapFrame) {
+          duckSprite2.pushSprite(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y);
+        } else {
+          duckSprite.pushSprite(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y);
+        }
+      }
+      else if (type == TYPE_FOE) {
+        // Draw foe with animation
+        if (gameData.flyingObstacles[i].flapFrame) {
+          foeSprite2.pushSprite(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y);
+        } else {
+          foeSprite.pushSprite(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y);
+        }
+      }
+      else if (type == TYPE_GIFT) {
+        // Draw gift (no animation)
+        giftSprite.pushSprite(gameData.flyingObstacles[i].pos.x, gameData.flyingObstacles[i].pos.y);
       }
     }
   }
-  
+
   // Draw sleigh - choose frame based on velocity direction
   // Frame 0 when moving up (negative velocity), Frame 1 when moving down (positive velocity)
   if (gameData.sleighVelocity < 0) {
@@ -682,10 +919,10 @@ void drawGameplay() {
   } else {
     sleighSprite2.pushSprite(SLEIGH_START_X, (int)gameData.sleighY);
   }
-  
+
   // Draw ground
   tft.fillRect(0, PLAYFIELD_HEIGHT, SCREEN_WIDTH, GROUND_HEIGHT, GROUND_GREEN);
-  
+
   // Draw score
   scoreSprite.fillSprite(GROUND_GREEN);
   scoreSprite.setTextColor(WHITE, GROUND_GREEN);
@@ -710,7 +947,7 @@ void drawGameOver() {
     tft.drawString("Appuyez pour recommencer", 35, 100);
     gameData.gameOverScreenDrawn = true;
   }
-  
+
   updateSnow();
 }
 
@@ -720,23 +957,23 @@ void drawGameOver() {
 
 void loop() {
   handleInput();
-  
+
   switch (gameData.state) {
     case STATE_MENU:
       drawMenu();
       delay(30);
       break;
-      
+
     case STATE_PLAYING:
       updatePhysics();
       updateObstacles();
-      updateDuckAnimation();
+      updateFlyingAnimation();
       checkCollisions();
       updateScore();
       drawGameplay();
       delay(30);
       break;
-      
+
     case STATE_GAME_OVER:
       updateHighScores();
       drawGameOver();
