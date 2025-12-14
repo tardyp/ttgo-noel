@@ -708,6 +708,11 @@ void updateObstacles() {
 }
 
 void updateScore() {
+  // Don't score points if sleigh has crashed
+  if (gameData.sleighCrashed) {
+    return;
+  }
+
   for (int i = 0; i < TREE_COUNT; i++) {
     if (gameData.trees[i].active && !gameData.trees[i].scored &&
         gameData.trees[i].pos.x + TREE_WIDTH < SLEIGH_START_X) {
@@ -758,14 +763,22 @@ void updateSnow() {
 // ============================================================================
 
 void checkCollisions() {
-  // Ground/ceiling
+  // ceiling
   if (gameData.sleighY < 2) {
     // Hit ceiling - set crashed and let sleigh fall
     gameData.sleighCrashed = true;
-    gameData.sleighVelocity = 0;  // Start falling from rest
+    if (gameData.sleighVelocity < 0) {
+      gameData.sleighVelocity = -gameData.sleighVelocity;  // bump downwards
+    }
     return;
   }
-  
+  // Ground
+  if (! gameData.sleighCrashed &&gameData.sleighY >= PLAYFIELD_HEIGHT - SLEIGH_HITBOX) {
+    gameData.sleighY = PLAYFIELD_HEIGHT - SLEIGH_HITBOX;
+    gameData.sleighVelocity = -gameData.sleighVelocity;  // Bounce effect
+    gameData.sleighCrashed = true;
+    return;
+  }
   // Check if crashed sleigh hit the ground
   if (gameData.sleighCrashed && gameData.sleighY >= PLAYFIELD_HEIGHT - SLEIGH_HITBOX) {
     gameData.state = STATE_GAME_OVER;
@@ -781,7 +794,8 @@ void checkCollisions() {
       if (gameData.sleighY + SLEIGH_HITBOX > PLAYFIELD_HEIGHT - TREE_HEIGHT) {
         // Collision with tree - set crashed and let sleigh fall
         gameData.sleighCrashed = true;
-        gameData.sleighVelocity = 0;  // Start falling from rest
+        gameData.sleighY = PLAYFIELD_HEIGHT - TREE_HEIGHT - SLEIGH_HITBOX;
+        gameData.sleighVelocity = -gameData.sleighVelocity/2;  // Bounce effect
         return;
       }
     }
@@ -801,7 +815,9 @@ void checkCollisions() {
         if (type == TYPE_DUCK) {
           // Duck: set crashed and let sleigh fall
           gameData.sleighCrashed = true;
-          gameData.sleighVelocity = 0;  // Start falling from rest
+          if (gameData.sleighVelocity < 0) {
+            gameData.sleighVelocity = -gameData.sleighVelocity;  // bump downwards
+          }
           return;
         }
         else if (type == TYPE_FOE) {
