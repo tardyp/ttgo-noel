@@ -543,7 +543,7 @@ void initializeGameData()
   gameData.state = STATE_MENU;
   gameData.lastStateChange = millis();
 
-  gameData.sleighY = PLAYFIELD_HEIGHT / 2;
+  gameData.sleighY = 30;
   gameData.sleighVelocity = 0;
   gameData.sleighOldY = gameData.sleighY;
   gameData.sleighCrashed = false;
@@ -1181,6 +1181,44 @@ void drawMenu()
   {
     tft.drawString("Mode Normal", 85, 100);
   }
+  int speed = 600;
+  float speed2 = 500;
+  if (gameData.gameMode != MODE_NORMAL)
+  {
+    speed = 300;
+    speed2 = 250;
+  }
+
+  if (millis() / speed % 2 == 0)
+  {
+    duckSprite.pushSprite(SCREEN_WIDTH - 40, 30);
+  }
+  else
+  {
+    duckSprite2.pushSprite(SCREEN_WIDTH - 40, 30);
+  }
+  tft.fillRect(10, 20, SLEIGH_WIDTH, SLEIGH_HEIGHT + 20, SKY_BLUE);
+  if (cos(millis() / speed2) > 0)
+  {
+    sleighSprite2.pushSprite(10, 30 + sin(millis() / speed2) * 10);
+  }
+  else
+  {
+    sleighSprite.pushSprite(10, 30 + sin(millis() / speed2) * 10);
+  }
+  tft.fillRect(SCREEN_WIDTH - 30, 90, SLEIGH_WIDTH, SLEIGH_HEIGHT + 20, SKY_BLUE);
+  if (gameData.gameMode == MODE_CHEAT)
+  {
+    if (cos(millis() / 200.0) > 0)
+    {
+      foeSprite2.pushSprite(SCREEN_WIDTH - 30, 100 + sin(millis() / 200.0) * 10);
+    }
+    else
+    {
+      foeSprite.pushSprite(SCREEN_WIDTH - 30, 100 + sin(millis() / 200.0) * 10);
+    }
+  }
+  tft.drawString("https://github.com/tardyp/ttgo-noel", 10, 122);
 }
 
 void drawGameplay()
