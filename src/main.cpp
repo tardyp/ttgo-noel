@@ -896,7 +896,7 @@ void updateObstacles()
       gameData.flyingObstacles[i].pos.move(-OBSTACLE_SPEED);
 
       // Check if obstacle went off-screen
-      if (gameData.flyingObstacles[i].pos.x < -DUCK_WIDTH)
+      if (gameData.flyingObstacles[i].pos.x < -DUCK_WIDTH * 2)
       {
         gameData.flyingObstacles[i].active = false;
         gameData.flyingObstacles[i].scored = false;
