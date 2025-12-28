@@ -13,6 +13,9 @@
 #include <SPIFFS.h>
 #include <Preferences.h>
 
+#ifndef ST7789_DRIVER
+#error "This code is intended to be used with the TTGO board. Please check your TFT_eSPI User_Setup.h make sure to uncomment User_Setups/Setup25_TTGO_T_Display.h"
+#endif
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
