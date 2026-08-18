@@ -2,8 +2,8 @@
  Christmas Flappy Bird Game - Refactored Architecture
  - Sleigh sprite from image
  - Trees and Ducks from images
- - Button on GPIO26 to flap
- - Screen: 240x135
+ - Main action button on GPIO14; mode button on GPIO0
+ - Screen: 320x170 landscape on LilyGo T-Display-S3
  - Clean separation of concerns with state machine
  */
 
@@ -14,21 +14,26 @@
 #include <Preferences.h>
 
 #ifndef ST7789_DRIVER
-#error "This code is intended to be used with the TTGO board. Please check your TFT_eSPI User_Setup.h make sure to uncomment User_Setups/Setup25_TTGO_T_Display.h"
+#error "This code requires the T-Display S3 ST7789 TFT_eSPI setup"
 #endif
+
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
 
 // Screen dimensions
-#define SCREEN_WIDTH 240
-#define SCREEN_HEIGHT 135
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 170
 #define GROUND_HEIGHT 10
 #define PLAYFIELD_HEIGHT (SCREEN_HEIGHT - GROUND_HEIGHT)
 
+#define DISPLAY_POWER_PIN 15
+#define DISPLAY_BACKLIGHT_PIN 38
+
 // Game constants
-#define BUTTON_PIN 12
-#define BUTTON2_PIN 26 // Optional second button for changing game mode
+#define BUTTON_PIN 14  // Built-in user button, active LOW
+#define BUTTON2_PIN 0  // BOOT button; changes game mode
+#define BUTTON3_PIN 1  // External action button, active LOW
 #define GRAVITY 0.3
 #define JUMP_STRENGTH -4.0
 #define OBSTACLE_SPEED (gameData.gameMode == MODE_SPEED ? 8 : gameData.gameMode == MODE_CHEAT ? (8 + gameData.currentScore / 20) \
@@ -44,7 +49,8 @@
 
 // Tree configuration
 #define TREE_WIDTH 20
-#define TREE_HEIGHT (SCREEN_HEIGHT / 4) // 34 pixels
+#define TREE_HEIGHT (SCREEN_HEIGHT / 4) // 42 pixels on the T-Display S3
+
 #define TREE_COUNT 5
 
 // Duck configuration
@@ -621,8 +627,16 @@ void initializeSnow()
 void setup()
 {
   Serial.begin(115200);
+
+  // Enable the display power rail and backlight on the T-Display S3.
+  pinMode(DISPLAY_POWER_PIN, OUTPUT);
+  digitalWrite(DISPLAY_POWER_PIN, HIGH);
+  pinMode(DISPLAY_BACKLIGHT_PIN, OUTPUT);
+  digitalWrite(DISPLAY_BACKLIGHT_PIN, TFT_BACKLIGHT_ON);
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
+  pinMode(BUTTON3_PIN, INPUT_PULLUP);
 
   // Load high score from NVM
   preferences.begin("flappysleigh", false);
@@ -635,7 +649,7 @@ void setup()
   }
 
   tft.init();
-  tft.setRotation(3);
+  tft.setRotation(1);
   tft.fillScreen(SKY_BLUE);
 
   loadSpritesFromSPIFFS();
@@ -654,8 +668,8 @@ void clearScreen()
 
 void handleInput()
 {
-  bool currentButton = !digitalRead(BUTTON_PIN);   // Active LOW
-  bool currentButton2 = !digitalRead(BUTTON2_PIN); // Active LOW
+  bool currentButton = !digitalRead(BUTTON_PIN) || !digitalRead(BUTTON3_PIN); // Built-in or external action button, active LOW
+  bool currentButton2 = !digitalRead(BUTTON2_PIN);                             // BOOT button, active LOW
   bool button1Event = false;
   bool button2Event = false;
 
@@ -1169,20 +1183,20 @@ void drawMenu()
 {
   tft.setTextColor(WHITE, SKY_BLUE, true);
   tft.setTextSize(2);
-  tft.drawString("Appuyez!", 70, 30);
+  tft.drawCentreString("Appuyez!", SCREEN_WIDTH / 2, 30, 2);
   tft.setTextSize(1);
-  tft.drawString("L'aventure du Pere Noel!", 40, 70);
+  tft.drawCentreString("L'aventure du Pere Noel!", SCREEN_WIDTH / 2, 70, 1);
   if (gameData.gameMode == MODE_SPEED)
   {
-    tft.drawString("Mode Rapide", 85, 100);
+    tft.drawCentreString("Mode Rapide", SCREEN_WIDTH / 2, 100, 1);
   }
   else if (gameData.gameMode == MODE_CHEAT)
   {
-    tft.drawString("Mode  Cheat", 85, 100);
+    tft.drawCentreString("Mode  Cheat", SCREEN_WIDTH / 2, 100, 1);
   }
   else
   {
-    tft.drawString("Mode Normal", 85, 100);
+    tft.drawCentreString("Mode Normal", SCREEN_WIDTH / 2, 100, 1);
   }
   int speed = 600;
   float speed2 = 500;
@@ -1221,7 +1235,7 @@ void drawMenu()
       foeSprite.pushSprite(SCREEN_WIDTH - 30, 100 + sin(millis() / 200.0) * 10);
     }
   }
-  tft.drawString("https://github.com/tardyp/ttgo-noel", 10, 122);
+  tft.drawString("https://github.com/tardyp/ttgo-noel", 10, SCREEN_HEIGHT - 16);
 }
 
 void drawGameplay()
@@ -1340,17 +1354,19 @@ void drawGameOver()
   if (!gameData.gameOverScreenDrawn)
   {
     initializeSnow();
-    tft.fillRect(20, 30, 200, 80, TFT_BLACK);
-    tft.drawRect(20, 30, 200, 80, WHITE);
+    const int boxX = (SCREEN_WIDTH - 240) / 2;
+    const int boxY = 30;
+    tft.fillRect(boxX, boxY, 240, 100, TFT_BLACK);
+    tft.drawRect(boxX, boxY, 240, 100, WHITE);
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.setTextSize(2);
-    tft.drawString("Perdu!!", 80, 38);
+    tft.drawCentreString("Perdu!!", SCREEN_WIDTH / 2, boxY + 8, 2);
     tft.setTextSize(1);
     tft.setTextColor(WHITE, TFT_BLACK);
-    tft.drawString("Score: " + String(gameData.currentScore), 75, 60);
-    tft.drawString("Meilleur: " + String(gameData.sessionHighScore[gameData.gameMode]), 55, 75);
-    tft.drawString("Record: " + String(gameData.foreverHighScore[gameData.gameMode]), 65, 88);
-    tft.drawString("Appuyez pour recommencer", 35, 100);
+    tft.drawCentreString("Score: " + String(gameData.currentScore), SCREEN_WIDTH / 2, boxY + 30, 1);
+    tft.drawCentreString("Meilleur: " + String(gameData.sessionHighScore[gameData.gameMode]), SCREEN_WIDTH / 2, boxY + 45, 1);
+    tft.drawCentreString("Record: " + String(gameData.foreverHighScore[gameData.gameMode]), SCREEN_WIDTH / 2, boxY + 60, 1);
+    tft.drawCentreString("Appuyez pour recommencer", SCREEN_WIDTH / 2, boxY + 75, 1);
     gameData.gameOverScreenDrawn = true;
   }
 
