@@ -1,16 +1,18 @@
 # Sprite Converter Guide
 
-This directory contains scripts to convert PNG images to RGB565 binary format for TFT_eSPI sprites.
+Convert PNG images to RGB565 binary assets for the TFT_eSPI sprites used by the firmware.
 
-## Required Sprite Sizes
+## Sprite Dimensions
 
-- **sleigh.png**: 20x14 pixels
-- **duck.png**: 20x14 pixels  
-- **tree.png**: 20x60 pixels
+- Sleigh, duck, foe, and explosion frames: 20x14 pixels
+- Gift frame: 13x14 pixels
+- Optional tree asset: 20x42 pixels (`TREE_HEIGHT` on the 320x170 display)
+
+The firmware has procedural fallbacks for missing assets. The current `data/` directory contains binary assets but not the original PNG sources.
 
 ## Game Color Palette
 
-Use these colors when creating your sprites to match the game background:
+Use these colors when creating sprites to match the game background:
 
 | Element | RGB565 | RGB888 (Hex) | Description |
 |---------|--------|--------------|-------------|
@@ -22,67 +24,47 @@ Use these colors when creating your sprites to match the game background:
 | Duck | 0xFFE0 | #F8F800 | Yellow |
 | White (Text) | 0xFFFF | #F8FCF8 | Off-white |
 
-**Example:** If creating a duck sprite with a transparent background, set the background to **#3850F8** (sky blue) or **#20B048** (grass green) depending on where the duck appears.
+Transparent pixels are replaced with the specified background color. Use `#3850F8` for sky or `#20B048` for grass, depending on where the sprite appears.
 
-## Python Method (Recommended)
+## Python Workflow
 
-### Install dependencies:
+Install the declared Python dependency in the Python 3.12 environment:
+
 ```bash
-pip install Pillow
+python3 -m pip install 'Pillow>=12'
 ```
 
-### Usage:
+The converter accepts `--output`; a second positional output filename is not valid.
+
 ```bash
-# Convert with auto-generated output name
-python3 convert_sprite.py sleigh.png
+# Single frame; writes data/sleigh0.bin
+python3 convert_sprite.py sleigh.png -o data/sleigh
 
-# Specify output filename
-python3 convert_sprite.py duck.png duck.bin
+# Two rows; writes data/duck0.bin and data/duck1.bin
+python3 convert_sprite.py duck.png --rows 2 -o data/duck --bg '#3850F8'
 
-# Specify custom background color
-python3 convert_sprite.py duck.png duck.bin --bg #3850F8
+# Optional tree asset
+python3 convert_sprite.py tree.png -o data/tree --bg '#20B048'
 ```
 
-### Batch convert all sprites:
-```bash
-python3 convert_sprite.py sleigh.png --bg #3850F8
-python3 convert_sprite.py duck.png --bg #3850F8
-python3 convert_sprite.py tree.png --bg #20B048
-```
-
-## Shell Script Method (Alternative)
-
-Requires ImageMagick:
-```bash
-brew install imagemagick
-```
-
-### Usage:
-```bash
-./convert_sprite.sh sleigh.png
-./convert_sprite.sh duck.png
-./convert_sprite.sh tree.png
-```
-
-## Notes
-
-- Transparent pixels are replaced with the specified background color
-- Output is in RGB565 format (16-bit per pixel)
-- Binary files are little-endian encoded
-- Upload .bin files to SPIFFS using PlatformIO
+Output files are named `<output-base>0.bin`, `<output-base>1.bin`, and so on. Each pixel is RGB565, stored big-endian on disk so the ESP32 loader and TFT_eSPI parallel output produce the expected panel byte order.
 
 ## Upload to SPIFFS
 
-1. Create `data` folder in project root (if not already created)
-2. Place .bin files in the data folder
-3. Run: `pio run --target uploadfs`
+1. Place generated `.bin` files in the project `data/` directory using the filenames expected by `src/main.cpp`.
+2. Build and flash the firmware:
 
-## Verifying Sprite Files
-
-To check your converted sprite file:
 ```bash
-xxd your_sprite.bin | head -20
+pio run -e lilygo-t-display-s3 -t upload
+pio run -e lilygo-t-display-s3 -t uploadfs
 ```
 
-Each line should show hex values representing RGB565 pixel data.
+Re-run `uploadfs` after changing any asset. The firmware loads sleigh, duck, foe, gift, and explosion files at startup; `/tree.bin` is optional because a procedural tree is available as fallback.
 
+## Verify Sprite Files
+
+```bash
+xxd data/sleigh0.bin | head -20
+```
+
+The output should contain two bytes per RGB565 pixel. Confirm colors on the actual display after uploading; host-side byte inspection cannot verify the panel rendering or SPIFFS load path.

@@ -94,7 +94,8 @@ def convert_png_to_bin(input_png, output_base, rows=1, transparent_color=None):
                         # Convert to RGB565
                         rgb565 = rgb888_to_rgb565(r, g, b)
 
-                        # Write as big-endian 16-bit value
+                        # Write big-endian bytes; the ESP32 loader reads into uint16_t
+                        # and TFT_eSPI's parallel path swaps them for the panel.
                         f.write(struct.pack('>H', rgb565))
 
             print(f"Converted frame {frame_idx} to {output_bin} ({frame_width * frame_height * 2} bytes)")
